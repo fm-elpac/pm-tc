@@ -1,0 +1,104 @@
+# pm_tc.conf.toml 举栗
+pm_tc = 1
+
+# 执行模板时, 允许的最大递归深度
+eval_rec = 16
+
+[[include]]
+file = "pm_ssh_tool.f.toml"
+
+[env]
+#M = ""
+#PORT = ""
+
+# 默认取自 环境变量, 用于 exec_eval 展开 `~` 路径
+#HOME = ""
+
+U_TARGET = "client_exporter"
+U = "node_exporter_ssh"
+
+KEY_NAME = "[:M_TARGET]-([U_TARGET])-{[:M]-([U])}-[:date]"
+
+KEY_FILE = "~/.ssh/id_ed25519-[KEY_NAME]"
+
+TARGET = "[:M1]-[U_TARGET]"
+
+# gen-key
+key_file = "[KEY_FILE].pub"
+
+ssh_keygen = "ssh-keygen -t ed25519 -C [KEY_NAME] -f [KEY_FILE]"
+
+# ssh-config
+ssh_config = """
+Host [TARGET]
+    HostName [:HOSTNAME]
+    User [U_TARGET]
+    IdentityFile [KEY_FILE]
+
+"""
+
+# gen-user
+user_unit_file = "ssh-from-[:M1].service"
+
+user_unit = """\
+\\[Unit\\]
+Description=SSH from [:M_TARGET]
+
+\\[Service\\]
+ExecStart=ssh -NT -R 127.0.0.1:[:PORT]:127.0.0.1:9100 [TARGET]
+
+Restart=always
+RestartSec=5
+
+\\[Install\\]
+WantedBy=default.target
+"""
+
+# add-key
+add_key_prefix = "restrict,port-forwarding,permitopen=\"127.0.0.1:8080\",permitlisten=\"127.0.0.1:[PORT]\""
+
+# task
+[[t._env]]
+"env:M_TARGET" = "ali_vm1"
+"env:M1" = "ali-vm1"
+"env:HOSTNAME" = "192.168.1.10"
+
+[[t._env]]
+"env:M_TARGET" = "vm_prom2"
+"env:M1" = "prom2"
+"env:HOSTNAME" = "192.168.2.20"
+
+# gen-key
+[[t."gen-key"]]
+env_for = "t._env"
+f = "gen_key"
+
+# ssh-config
+[[t."ssh-config"]]
+env_for = "t._env"
+f = "ssh_config"
+
+# gen-user
+[[t."gen-user"]]
+env_for = "t._env"
+f = "gen_user"
+
+# cat-key
+[[t."cat-key"]]
+env_for = "t._env"
+f = "cat_key"
+
+# init
+[[t.init]]
+dep = ["t.gen-key", "t.ssh-config", "t.gen-user", "t.cat-key"]
+
+# enable
+[[t.enable]]
+env_for = "t._env"
+f = "enable"
+
+# add-key PUB
+[[t."add-key"]]
+f = "add_key"
+arg = 1
+"env:pubkey" = "[@1]"

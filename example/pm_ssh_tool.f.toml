@@ -1,0 +1,136 @@
+# pm_ssh_tool.f.toml
+#
+# + gen_key
+# + ssh_config
+# + gen_user
+# + cat_key
+# + enable
+# + add_key
+#
+pm_tc = 1
+
+[env]
+#key_file = ""
+#ssh_keygen = ""
+#ssh_config = ""
+#user_unit_file = ""
+#user_unit = ""
+#add_key_prefix = ""
+#pubkey = ""
+
+# ssh_config
+_ssh_dir_config = "~/.ssh/config.d"
+
+_ssh_config_include1 = """
+Include [_ssh_dir_config]/*.conf
+"""
+
+_ssh_config_include = """
+# pm_ssh_tool
+[_ssh_config_include1]
+"""
+
+# gen_user
+_sd_user = "~/.config/systemd/user"
+
+# add_key
+_ssh_key_dir = "~/.ssh/authorized_keys.d"
+
+_add_key = """
+[:add_key_prefix] [:pubkey]
+"""
+
+# f
+[[f]]
+name = "gen_key"
+skip_file_eval = "[2:key_file]"
+a = "exec"
+exec_eval = "[2:ssh_keygen]"
+
+[[f]]
+name = "_ssh_dir_chmod"
+dep = ["f._ssh_dir"]
+a = "chmod"
+mod = "700"
+path_eval = ["~/.ssh", "[_ssh_dir_config]"]
+
+# dir `~/.ssh/config.d`
+[[f]]
+name = "_ssh_dir"
+once = 1
+skip_file_eval = "[_ssh_dir_config]"
+a = "mkdir"
+path_eval = "[_ssh_dir_config]"
+
+# `~/.ssh/config`
+# Include ~/.ssh/config.d/*.conf
+[[f]]
+name = "_ssh_config_include"
+once = 1
+skip_include_eval = "[_ssh_config_include1]"
+file_eval = "~/.ssh/config"
+dep = ["f._ssh_dir"]
+a = "file_append"
+text_eval = "[_ssh_config_include]"
+
+[[f]]
+name = "ssh_config"
+dep = ["f._ssh_dir_chmod", "f._ssh_config_include"]
+a = "file_merge"
+file_eval = "[_ssh_dir_config]/pm_ssh_tool.conf"
+text_eval = "[2:ssh_config]"
+
+# dir `~/.config/systemd/user`
+[[f]]
+name = "_systemd_user_dir"
+once = 1
+skip_file_eval = "[_sd_user]"
+a = "mkdir"
+path_eval = "[_sd_user]"
+
+[[f]]
+name = "gen_user"
+dep = ["f._systemd_user_dir"]
+a = "file"
+file_eval = "[_sd_user]/[2:user_unit_file]"
+text_eval = "[2:user_unit]"
+
+[[f]]
+name = "cat_key"
+a = "cat"
+file_eval = "[2:key_file]"
+
+[[f]]
+name = "_systemd_reload"
+once = 1
+a = "exec"
+exec_eval = "systemctl --user daemon-reload"
+
+[[f]]
+name = "enable"
+dep = ["f._systemd_reload"]
+a = "exec"
+exec_eval = "systemctl --user enable --now [2:user_unit_file]"
+
+[[f]]
+name = "_key_dir_chmod"
+dep = ["f._key_dir"]
+a = "chmod"
+mod = "700"
+path_eval = ["~/.ssh", "[_ssh_key_dir]"]
+
+# dir `~/.ssh/authorized_keys.d`
+[[f]]
+name = "_key_dir"
+once = 1
+skip_file_eval = "[_ssh_key_dir]"
+a = "mkdir"
+path_eval = "[_ssh_key_dir]"
+
+[[f]]
+name = "add_key"
+skip_include_eval = "[pubkey]"
+dep = ["f._key_dir_chmod"]
+a = "file_append"
+file_eval = "[_ssh_key_dir]/pm_ssh_tool"
+text_eval = "[2:_add_key]"
