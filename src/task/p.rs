@@ -7,7 +7,7 @@ use std::{
 use crate::{
     check::{MissingRef, check_dep_cycle, dep_edges, norm_path},
     conf::{HasP, HasPD, PmtcConf, PmtcF, PmtcFA, PmtcTask, SrcP},
-    te::{PmtcEnv, TeError, conf_env, end, eval, exec_eval, get_home, path_home},
+    te::{PmtcEnv, TeError, conf_env, end, eval_use, exec_eval_use, get_home, path_home},
 };
 
 use super::{CheckEnv, PlanDebug, PmtcRunList, PmtcRunOp, TaskDebug, TaskError};
@@ -26,7 +26,7 @@ pub fn plan<C: CheckEnv>(
 ) -> Result<(PmtcRunList, PlanDebug), Box<dyn Error>> {
     // 先把 所有 `[env]` 执行一遍, 结果作为 只读基础环境.
     // 每执行一个 task, 再 clone 一份, 加入本 task 的变量.
-    let env0 = conf_env(env, conf.env.clone(), conf.eval_rec).map_err(|e| {
+    let (env0, u) = conf_env(env, conf.env.clone(), conf.eval_rec).map_err(|e| {
         Box::new(TaskError::Te(HasPD::new(e.src(), e.as_ref().clone()))) as Box<dyn Error>
     })?;
 
@@ -38,6 +38,7 @@ pub fn plan<C: CheckEnv>(
     // 用于调试
     let pd = PlanDebug {
         env0,
+        u,
         task: Vec::new(),
     };
 
@@ -193,23 +194,29 @@ impl<C: CheckEnv> Planner<'_, C> {
                 let target = h.as_ref().clone();
                 let n = self.conf.task[target.as_str()].len();
                 for j in 0..n {
-                    let mut env = self.vars_of(&target, j, &[])?;
+                    let (mut env, mut env_use, mut u) = self.vars_of(&target, j, &[])?;
                     inject_args(&mut env, args);
-                    self.eval_own(&t, &mut env)?;
+                    self.eval_own(&t, &mut env, &mut u)?;
+                    self.emit_f(&t, &mut env, &mut u)?;
+                    env_use.extend(env.use_get());
                     self.pd.task.push(TaskDebug {
                         name: name.to_string(),
                         env: env.to_map_sort(),
+                        env_use,
+                        u,
                     });
-                    self.emit_f(&t, &env)?;
                 }
             }
             None => {
-                let env = self.vars_of(name, idx, args)?;
+                let (mut env, mut env_use, mut u) = self.vars_of(name, idx, args)?;
+                self.emit_f(&t, &mut env, &mut u)?;
+                env_use.extend(env.use_get());
                 self.pd.task.push(TaskDebug {
                     name: name.to_string(),
                     env: env.to_map_sort(),
+                    env_use,
+                    u,
                 });
-                self.emit_f(&t, &env)?;
             }
         }
 
@@ -219,32 +226,58 @@ impl<C: CheckEnv> Planner<'_, C> {
     /// 计算 某个 task 实例的 变量结果 (不执行其 依赖/f).
     ///
     /// = 基础环境 + (env_for 链 结果) + `@n` 参数 + 自身 `env:XXX` (eval).
-    fn vars_of(&self, name: &str, idx: usize, args: &[String]) -> Result<PmtcEnv, TaskError> {
+    ///
+    /// 返回 `(env, env_use, u)`:
+    /// - `env`: 变量结果. `use` 标记 已清空 (供 调用者 继续标记 f 动作).
+    /// - `env_use`: 计算变量 过程中 使用的变量 (`use`), 含 env_for 链.
+    /// - `u`: 计算变量 过程中 出现的 未知变量, 含 env_for 链.
+    fn vars_of(
+        &self,
+        name: &str,
+        idx: usize,
+        args: &[String],
+    ) -> Result<(PmtcEnv, HashSet<(String, u8)>, HashSet<String>), TaskError> {
         let t = self.conf.task[name][idx].as_ref().clone();
         let mut env = self.pd.env0.clone();
+        // 只统计 本 task 的 use 标记 (不包含 初始化 `[env]` 阶段).
+        env.use_clear();
+
+        let mut env_use: HashSet<(String, u8)> = HashSet::new();
+        let mut u: HashSet<String> = HashSet::new();
 
         if let Some(h) = &t.env_for {
             let target = h.as_ref().clone();
             let n = self.conf.task[target.as_str()].len();
             for j in 0..n {
-                let tv = self.vars_of(&target, j, &[])?;
+                let (tv, tv_use, tv_u) = self.vars_of(&target, j, &[])?;
                 env.add(tv);
+                env_use.extend(tv_use);
+                u.extend(tv_u);
             }
         }
 
         inject_args(&mut env, args);
-        self.eval_own(&t, &mut env)?;
-        Ok(env)
+        self.eval_own(&t, &mut env, &mut u)?;
+
+        env_use.extend(env.use_get());
+        // 清空 use 标记, 由 调用者 (f 动作 求值) 重新标记.
+        env.use_clear();
+        Ok((env, env_use, u))
     }
 
     /// eval 本 task 的 `env:NAME` 变量, 并 写入 env.
     ///
     /// 所有 `env:NAME` 都 先 基于 同一个 (尚未加入 本 task 变量 的) env 求值,
     /// 再统一写入, 避免 HashMap 无序 导致 求值顺序 不确定.
-    fn eval_own(&self, t: &PmtcTask, env: &mut PmtcEnv) -> Result<(), TaskError> {
+    fn eval_own(
+        &self,
+        t: &PmtcTask,
+        env: &mut PmtcEnv,
+        u: &mut HashSet<String>,
+    ) -> Result<(), TaskError> {
         let mut vals: Vec<(String, String)> = Vec::new();
         for (k, v) in &t.env {
-            let val = eval(v.as_ref(), env, self.rec()).map_err(|e| te_err(v, e))?;
+            let val = eval_use(v.as_ref(), env, self.rec(), u).map_err(|e| te_err(v, e))?;
             vals.push((k.clone(), val));
         }
         for (k, val) in vals {
@@ -254,9 +287,14 @@ impl<C: CheckEnv> Planner<'_, C> {
     }
 
     /// 执行 本 task 对应的 `[[f]]`.
-    fn emit_f(&mut self, t: &PmtcTask, env: &PmtcEnv) -> Result<(), Box<dyn Error>> {
+    fn emit_f(
+        &mut self,
+        t: &PmtcTask,
+        env: &mut PmtcEnv,
+        u: &mut HashSet<String>,
+    ) -> Result<(), Box<dyn Error>> {
         if let Some(hf) = &t.f {
-            self.emit_f_by_name(hf.as_ref(), env, hf.src())?;
+            self.emit_f_by_name(hf.as_ref(), env, u, hf.src())?;
         }
         Ok(())
     }
@@ -265,7 +303,8 @@ impl<C: CheckEnv> Planner<'_, C> {
     fn emit_f_by_name(
         &mut self,
         name: &str,
-        env: &PmtcEnv,
+        env: &mut PmtcEnv,
+        u: &mut HashSet<String>,
         src: SrcP,
     ) -> Result<(), Box<dyn Error>> {
         let pf = self.conf.f.get(name).cloned().ok_or_else(|| {
@@ -283,66 +322,88 @@ impl<C: CheckEnv> Planner<'_, C> {
             }
         }
 
+        // skip 判断 先于 依赖, 保证 被 skip 的 f 不会 执行其依赖.
+        if self.skip_f(f, env, u)? {
+            return Ok(());
+        }
+
         // f 依赖 先于 自身执行 (使用 相同的 task 环境).
         for h in &f.dep {
-            self.emit_f_by_name(h.as_ref(), env, h.src())?;
+            self.emit_f_by_name(h.as_ref(), env, u, h.src())?;
         }
 
-        self.emit_f_action(f, env)
+        self.emit_f_action(f, env, u)
     }
 
-    /// 执行 `[[f]]` 的 自身动作 (不含 依赖/once).
-    fn emit_f_action(&mut self, f: &PmtcF, env: &PmtcEnv) -> Result<(), Box<dyn Error>> {
+    /// skip 条件: 在 plan 阶段 读取 环境现状 判断.
+    ///
+    /// 如果 本 f 被 skip, 则 本 f 以及 其 依赖 都不执行.
+    fn skip_f(
+        &mut self,
+        f: &PmtcF,
+        env: &mut PmtcEnv,
+        u: &mut HashSet<String>,
+    ) -> Result<bool, Box<dyn Error>> {
+        if self.skip_file(f, env, u)? {
+            return Ok(true);
+        }
+        let Some(ha) = &f.a else { return Ok(false) };
+        let a = ha.as_ref();
+        if self.skip_include(f, a, env, u)? {
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// 执行 `[[f]]` 的 自身动作 (不含 依赖/once/skip).
+    fn emit_f_action(
+        &mut self,
+        f: &PmtcF,
+        env: &mut PmtcEnv,
+        u: &mut HashSet<String>,
+    ) -> Result<(), Box<dyn Error>> {
         let Some(ha) = &f.a else { return Ok(()) };
         let a = ha.as_ref();
-
-        // skip 条件: 在 plan 阶段 读取 环境现状 判断.
-        if self.skip_file(f, env)? {
-            return Ok(());
-        }
-        if self.skip_include(f, a, env)? {
-            return Ok(());
-        }
 
         let r = self.rec();
         match a {
             PmtcFA::Exec(h) => {
-                let argv = eval_exec(h, env, r)?;
+                let argv = eval_exec(h, env, r, u)?;
                 self.raw.push(RawOp::Run(PmtcRunOp::Exec(argv)));
             }
             PmtcFA::ExecSh(h) => {
-                let cmd = eval_text(h, env, r)?;
+                let cmd = eval_text(h, env, r, u)?;
                 self.raw.push(RawOp::Run(PmtcRunOp::ExecSh(cmd)));
             }
             PmtcFA::Echo(h) => {
-                let text = eval_text(h, env, r)?;
+                let text = eval_text(h, env, r, u)?;
                 self.raw.push(RawOp::Run(PmtcRunOp::Echo(text)));
             }
             PmtcFA::Log(l) => {
                 let mut argv = Vec::with_capacity(l.len());
                 for h in l {
-                    argv.push(eval_text(h, env, r)?);
+                    argv.push(eval_text(h, env, r, u)?);
                 }
                 self.raw.push(RawOp::Run(PmtcRunOp::Log(argv)));
             }
             PmtcFA::Cat(h) => {
-                let path = eval_path(h, env, r)?;
+                let path = eval_path(h, env, r, u)?;
                 self.raw.push(RawOp::Run(PmtcRunOp::Cat(path)));
             }
             PmtcFA::Mkdir(h) => {
-                let path = eval_path(h, env, r)?;
+                let path = eval_path(h, env, r, u)?;
                 self.raw.push(RawOp::Run(PmtcRunOp::Mkdir(path)));
             }
             PmtcFA::Chmod(c) => {
                 let mode = *c.mode.as_ref();
                 for h in &c.path_eval {
-                    let path = eval_path(h, env, r)?;
+                    let path = eval_path(h, env, r, u)?;
                     self.raw.push(RawOp::Run(PmtcRunOp::Chmod((path, mode))));
                 }
             }
             PmtcFA::File(w) => {
-                let path = eval_path(&w.file_eval, env, r)?;
-                let text = eval_text(&w.text_eval, env, r)?;
+                let path = eval_path(&w.file_eval, env, r, u)?;
+                let text = eval_text(&w.text_eval, env, r, u)?;
                 self.raw.push(RawOp::Replace {
                     src: w.file_eval.src(),
                     path,
@@ -350,8 +411,8 @@ impl<C: CheckEnv> Planner<'_, C> {
                 });
             }
             PmtcFA::FileAppend(w) => {
-                let path = eval_path(&w.file_eval, env, r)?;
-                let text = eval_text(&w.text_eval, env, r)?;
+                let path = eval_path(&w.file_eval, env, r, u)?;
+                let text = eval_text(&w.text_eval, env, r, u)?;
                 self.raw.push(RawOp::Append {
                     src: w.file_eval.src(),
                     path,
@@ -359,8 +420,8 @@ impl<C: CheckEnv> Planner<'_, C> {
                 });
             }
             PmtcFA::FileMerge(w) => {
-                let path = eval_path(&w.file_eval, env, r)?;
-                let text = eval_text(&w.text_eval, env, r)?;
+                let path = eval_path(&w.file_eval, env, r, u)?;
+                let text = eval_text(&w.text_eval, env, r, u)?;
                 self.raw.push(RawOp::Merge {
                     src: w.file_eval.src(),
                     path,
@@ -372,9 +433,14 @@ impl<C: CheckEnv> Planner<'_, C> {
         Ok(())
     }
 
-    fn skip_file(&mut self, f: &PmtcF, env: &PmtcEnv) -> Result<bool, Box<dyn Error>> {
+    fn skip_file(
+        &mut self,
+        f: &PmtcF,
+        env: &mut PmtcEnv,
+        u: &mut HashSet<String>,
+    ) -> Result<bool, Box<dyn Error>> {
         if let Some(h) = &f.skip_file_eval {
-            let path = eval_path(h, env, self.rec())?;
+            let path = eval_path(h, env, self.rec(), u)?;
             if self.c.file_exist(&path)? {
                 return Ok(true);
             }
@@ -386,7 +452,8 @@ impl<C: CheckEnv> Planner<'_, C> {
         &mut self,
         f: &PmtcF,
         a: &PmtcFA,
-        env: &PmtcEnv,
+        env: &mut PmtcEnv,
+        u: &mut HashSet<String>,
     ) -> Result<bool, Box<dyn Error>> {
         let Some(h) = &f.skip_include_eval else {
             return Ok(false);
@@ -398,8 +465,8 @@ impl<C: CheckEnv> Planner<'_, C> {
             _ => return Ok(false),
         };
 
-        let needle = eval_text(h, env, self.rec())?;
-        let path = eval_path(file, env, self.rec())?;
+        let needle = eval_text(h, env, self.rec(), u)?;
+        let path = eval_path(file, env, self.rec(), u)?;
 
         // 文件不存在 (或读取失败) 视为 不跳过.
         match self.c.file_read(&path) {
@@ -520,8 +587,13 @@ fn te_err(h: &HasP<String>, e: TeError) -> TaskError {
 }
 
 /// 对 路径模板 求值: eval -> end -> `~` 展开 (只考虑 Linux 系统)
-fn eval_path(h: &HasP<String>, env: &PmtcEnv, r: u16) -> Result<String, TaskError> {
-    let v = eval(h.as_ref(), env, r).map_err(|e| te_err(h, e))?;
+fn eval_path(
+    h: &HasP<String>,
+    env: &mut PmtcEnv,
+    r: u16,
+    u: &mut HashSet<String>,
+) -> Result<String, TaskError> {
+    let v = eval_use(h.as_ref(), env, r, u).map_err(|e| te_err(h, e))?;
     let v = end(&v).map_err(|e| te_err(h, e))?;
     // 展开 `~`
     let home = get_home(env);
@@ -529,14 +601,24 @@ fn eval_path(h: &HasP<String>, env: &PmtcEnv, r: u16) -> Result<String, TaskErro
 }
 
 /// 对 文本模板 求值: eval -> end.
-fn eval_text(h: &HasP<String>, env: &PmtcEnv, r: u16) -> Result<String, TaskError> {
-    let v = eval(h.as_ref(), env, r).map_err(|e| te_err(h, e))?;
+fn eval_text(
+    h: &HasP<String>,
+    env: &mut PmtcEnv,
+    r: u16,
+    u: &mut HashSet<String>,
+) -> Result<String, TaskError> {
+    let v = eval_use(h.as_ref(), env, r, u).map_err(|e| te_err(h, e))?;
     end(&v).map_err(|e| te_err(h, e))
 }
 
 /// `exec` 命令 求值 (split + `~` 展开).
-fn eval_exec(h: &HasP<String>, env: &PmtcEnv, r: u16) -> Result<Vec<String>, TaskError> {
-    exec_eval(h.as_ref(), env, r).map_err(|e| te_err(h, e))
+fn eval_exec(
+    h: &HasP<String>,
+    env: &mut PmtcEnv,
+    r: u16,
+    u: &mut HashSet<String>,
+) -> Result<Vec<String>, TaskError> {
+    exec_eval_use(h.as_ref(), env, r, u).map_err(|e| te_err(h, e))
 }
 
 /// 检查 task/f 的 依赖/引用:

@@ -1,7 +1,16 @@
 //! 任务/依赖
-use std::{collections::BTreeMap, env, error::Error};
+//!
+//! 在 `task::plan()` 与 `task::run()` 执行期间, pm-tc 假定外部环境保持不变:
+//! 没有其它程序或用户操作与 pm-tc 冲突或并发执行. 调用者应保证这一点;
+//! pm-tc 不处理由此导致的故障或 BUG.
+use std::{
+    collections::{BTreeMap, HashSet},
+    env,
+    error::Error,
+};
 
 use chrono::Local;
+use serde::Serialize;
 
 #[cfg(feature = "f")]
 use crate::f;
@@ -20,7 +29,7 @@ pub const PMTC_ENV_AT: &'static str = "@";
 pub const PMTC_ENV_DATE: &'static str = "date";
 
 /// 单个执行动作
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub enum PmtcRunOp {
     /// 输出日志
     Log(Vec<String>),
@@ -84,10 +93,12 @@ pub trait CheckEnv {
 }
 
 /// 用于 `task::plan` 调试
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct PlanDebug {
     /// 执行 每个任务 之前的 基础/只读 变量
     pub env0: PmtcEnv,
+    /// 初始化阶段 未知变量
+    pub u: HashSet<String>,
     /// 执行的 每个任务.
     ///
     /// 顺序与 `PmtcRunList` 中的 执行顺序 一致.
@@ -95,12 +106,16 @@ pub struct PlanDebug {
 }
 
 /// 用于 `task::plan` 调试 (单个任务)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TaskDebug {
     /// 任务名称
     pub name: String,
     /// 最终 变量 (集) (有序)
     pub env: BTreeMap<String, String>,
+    /// 使用的变量 `use`
+    pub env_use: HashSet<(String, u8)>,
+    /// 未知变量
+    pub u: HashSet<String>,
 }
 
 /// 生成 内置变量 (集)

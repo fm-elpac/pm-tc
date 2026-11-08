@@ -1,5 +1,7 @@
 use std::{collections::HashMap, error::Error};
 
+use crate::te::EnvVar;
+
 use super::*;
 
 // example 文件 只用于 "最终验证" (见 load_examples).
@@ -23,7 +25,8 @@ fn load_files(main: &str, files: &[(&str, &str)]) -> Result<PmtcConf, Box<dyn Er
     for (p, t) in files {
         map.insert((*p).to_string(), (*t).to_string());
     }
-    load("main.toml", &mut MapReader(map))
+    let mut src = SrcInfo::new();
+    load("main.toml", &mut MapReader(map), &mut src)
 }
 
 /// 取 `[[f]]` 的 动作.
@@ -60,6 +63,23 @@ fn parse_minimal() {
     assert!(c.task.contains_key("one"));
     assert!(c.task.contains_key("two"));
     assert!(c.f.contains_key("act"));
+}
+
+#[test]
+fn parse_env_rm() {
+    let c = parse(
+        "pm_tc = 1\n\
+         [env]\n\
+         a = \"x\"\n\
+         b = 0\n",
+        0,
+    )
+    .unwrap();
+
+    let env = c.env.to_vec();
+    assert_eq!(env.len(), 2);
+    assert!(matches!(&env[0].1, EnvVar::Set(v) if v == "x"));
+    assert!(matches!(&env[1].1, EnvVar::Rm));
 }
 
 #[test]
@@ -124,7 +144,8 @@ fn load_examples() {
         ("example/pm_tc.conf.toml".into(), EXAMPLE_MAIN.into()),
         ("example/pm_ssh_tool.f.toml".into(), EXAMPLE_INCLUDE.into()),
     ]));
-    let c = load("example/pm_tc.conf.toml", &mut r).unwrap();
+    let mut src = SrcInfo::new();
+    let c = load("example/pm_tc.conf.toml", &mut r, &mut src).unwrap();
 
     assert_eq!(c.eval_rec, 16);
     assert!(c.task.contains_key("init"));
@@ -177,9 +198,33 @@ fn err_value_type() {
 }
 
 #[test]
+fn err_env_rm_value() {
+    // [env] 中 整数 只能是 0 (删除变量), 其它整数 报错
+    assert!(parse("pm_tc = 1\n[env]\nA = 1\n", 0).is_err());
+}
+
+#[test]
 fn err_value_range() {
     // once 只允许 0 / 1
     assert!(parse("pm_tc = 1\n[[f]]\nname = \"a\"\nonce = 2\n", 0).is_err());
+}
+
+#[test]
+fn err_f_name_missing() {
+    // [[f]] 缺少 name
+    assert!(parse("pm_tc = 1\n[[f]]\na = \"echo\"\ntext_eval = \"hi\"\n", 0).is_err());
+}
+
+#[test]
+fn err_f_name_empty() {
+    // [[f]] name 为空字符串
+    assert!(
+        parse(
+            "pm_tc = 1\n[[f]]\nname = \"\"\na = \"echo\"\ntext_eval = \"hi\"\n",
+            0
+        )
+        .is_err()
+    );
 }
 
 #[test]

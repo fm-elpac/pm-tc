@@ -26,10 +26,17 @@ pm-tc (PM Template Config Tool) parses/checks the config file (default
 - **Template engine** (`te`): supports `[NAME]`, `[:NAME]`, `[n:NAME]` variable
   expansion and escapes `\\` `\[` `\]`; recursion depth is limited by
   `eval_rec`.
+- **Variable operations** (`[env]`): a string value defines/overrides a variable
+  (`EnvVar::Set`), and the integer `0` removes the same-named variable
+  (`EnvVar::Rm`); operations run in order of appearance.
 - **Execution plan** (`task::plan`): first evaluates all `[env]` into a
   read-only base environment, then recursively expands tasks into an action list
   (`PmtcRunList`) following dependencies. `file_merge` actions are merged into a
   single `file` during planning.
+- **Runtime assumptions**: during `task::plan()` and `task::run()`, the external
+  environment is assumed to stay unchanged: no other program or user action
+  conflicts with, or runs concurrently with, pm-tc. The caller must guarantee
+  this; pm-tc does not handle failures or bugs caused by such interference.
 
 ## Project Conventions
 

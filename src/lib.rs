@@ -7,6 +7,7 @@
 pub mod cli;
 
 pub mod conf;
+pub mod error;
 pub mod te;
 
 #[cfg(feature = "f")]
@@ -15,7 +16,6 @@ pub mod f;
 pub mod task;
 
 mod check;
-mod error;
 
 pub use conf::{ConfError, PmtcConf};
 pub use error::PmtcError;

@@ -2,7 +2,7 @@ use std::{collections::HashMap, error::Error, io};
 
 use crate::{
     conf::{HasP, PmtcConf, PmtcF, PmtcFA, PmtcFChmod, PmtcFFileWrite, PmtcTask, SrcInfo, SrcP},
-    te::{PmtcEnv, PmtcEnvList},
+    te::{PMTC_ENV_LABEL_DEFAULT, PmtcEnv, PmtcEnvList},
 };
 
 use super::{CheckEnv, PlanDebug, PmtcRunList, PmtcRunOp, plan};
@@ -459,6 +459,25 @@ fn plan_conf_env() {
 }
 
 #[test]
+fn plan_conf_env_rm() {
+    // [env] 中 值为 0 时, 删除 同名 变量.
+    let mut rm = PmtcEnvList::new();
+    rm.add_rm("G", src());
+
+    let c = conf_env(
+        vec![("a", vec![task(&[], None, Some("f"), &[])])],
+        vec![("f", f_task(Some(PmtcFA::Echo(hs("[G]".to_string())))))],
+        vec![rm],
+    );
+    let mut ce = MemEnv::new();
+    let mut env = PmtcEnv::new();
+    env.set("G", "base");
+
+    let o = ops(plan(&vec!["a".to_string()], &c, &env, &mut ce).unwrap());
+    assert_eq!(echo_text(&o[0]), "");
+}
+
+#[test]
 fn plan_file_merge() {
     let c = conf(
         vec![
@@ -630,6 +649,101 @@ fn plan_skip_include() {
     ce.files.insert("out".to_string(), "other".to_string());
     let o = ops(plan(&vec!["a".to_string()], &c, &env, &mut ce).unwrap());
     assert_eq!(o.len(), 1);
+}
+
+#[test]
+fn plan_f_dep_skip_file() {
+    // f a 被 skip_file 跳过时, 其依赖 b, c 也不执行.
+    let c = conf(
+        vec![("t", vec![task(&[], None, Some("a"), &[])])],
+        vec![
+            (
+                "a",
+                f_full(
+                    Some(PmtcFA::Echo(hs("A".to_string()))),
+                    false,
+                    Some("exists"),
+                    None,
+                    &["b"],
+                ),
+            ),
+            (
+                "b",
+                f_full(
+                    Some(PmtcFA::Echo(hs("B".to_string()))),
+                    false,
+                    None,
+                    None,
+                    &["c"],
+                ),
+            ),
+            ("c", f_task(Some(PmtcFA::Echo(hs("C".to_string()))))),
+        ],
+    );
+    let mut ce = MemEnv::new();
+    ce.exist.insert("exists".to_string(), true);
+    let env = PmtcEnv::new();
+
+    let o = ops(plan(&vec!["t".to_string()], &c, &env, &mut ce).unwrap());
+    assert_eq!(o.len(), 0);
+}
+
+#[test]
+fn plan_f_dep_skip_include() {
+    // f a 被 skip_include 跳过时, 其依赖 b 也不执行.
+    let c = conf(
+        vec![("t", vec![task(&[], None, Some("a"), &[])])],
+        vec![
+            (
+                "a",
+                f_full(
+                    Some(PmtcFA::FileAppend(PmtcFFileWrite {
+                        file_eval: hs("out".to_string()),
+                        text_eval: hs("x".to_string()),
+                    })),
+                    false,
+                    None,
+                    Some("needle"),
+                    &["b"],
+                ),
+            ),
+            ("b", f_task(Some(PmtcFA::Echo(hs("B".to_string()))))),
+        ],
+    );
+    let mut ce = MemEnv::new();
+    ce.files.insert("out".to_string(), "has needle".to_string());
+    let env = PmtcEnv::new();
+
+    let o = ops(plan(&vec!["t".to_string()], &c, &env, &mut ce).unwrap());
+    assert_eq!(o.len(), 0);
+}
+
+#[test]
+fn plan_f_dep_not_skip() {
+    // f a 不被 skip 时, 其依赖 b 先执行, 然后 a 自身执行.
+    let c = conf(
+        vec![("t", vec![task(&[], None, Some("a"), &[])])],
+        vec![
+            (
+                "a",
+                f_full(
+                    Some(PmtcFA::Echo(hs("A".to_string()))),
+                    false,
+                    Some("missing"),
+                    None,
+                    &["b"],
+                ),
+            ),
+            ("b", f_task(Some(PmtcFA::Echo(hs("B".to_string()))))),
+        ],
+    );
+    let mut ce = MemEnv::new();
+    let env = PmtcEnv::new();
+
+    let o = ops(plan(&vec!["t".to_string()], &c, &env, &mut ce).unwrap());
+    assert_eq!(o.len(), 2);
+    assert_eq!(echo_text(&o[0]), "B");
+    assert_eq!(echo_text(&o[1]), "A");
 }
 
 #[test]
@@ -900,4 +1014,108 @@ fn err_f_dep_cycle() {
     let mut ce = MemEnv::new();
     let env = PmtcEnv::new();
     assert!(plan(&vec!["t".to_string()], &c, &env, &mut ce).is_err());
+}
+
+// ===== 调试数据 (env_use / u) =====
+
+#[test]
+fn plan_debug_env_use() {
+    let c = conf(
+        vec![("a", vec![task(&[("A", "[X]")], None, Some("f"), &[])])],
+        vec![("f", f_task(Some(PmtcFA::Echo(hs("[A]".to_string())))))],
+    );
+    let mut ce = MemEnv::new();
+    let mut env = PmtcEnv::new();
+    env.set("X", "v");
+
+    let (_, pd) = plan(&vec!["a".to_string()], &c, &env, &mut ce).unwrap();
+    assert_eq!(pd.task.len(), 1);
+
+    let used = &pd.task[0].env_use;
+    assert!(used.contains(&("X".to_string(), PMTC_ENV_LABEL_DEFAULT)));
+    assert!(used.contains(&("A".to_string(), PMTC_ENV_LABEL_DEFAULT)));
+    assert!(pd.task[0].u.is_empty());
+}
+
+#[test]
+fn plan_debug_unknown() {
+    let c = conf(
+        vec![("a", vec![task(&[("A", "[MISS]")], None, Some("f"), &[])])],
+        vec![("f", f_task(Some(PmtcFA::Echo(hs("[A]".to_string())))))],
+    );
+    let mut ce = MemEnv::new();
+    let env = PmtcEnv::new();
+
+    let (_, pd) = plan(&vec!["a".to_string()], &c, &env, &mut ce).unwrap();
+    assert_eq!(pd.task.len(), 1);
+    assert!(pd.task[0].u.contains("MISS"));
+    assert!(
+        pd.task[0]
+            .env_use
+            .contains(&("A".to_string(), PMTC_ENV_LABEL_DEFAULT))
+    );
+}
+
+#[test]
+fn plan_debug_init_unknown() {
+    let c = conf_env(
+        vec![("a", vec![task(&[], None, Some("f"), &[])])],
+        vec![("f", f_task(Some(PmtcFA::Echo(hs("ok".to_string())))))],
+        vec![env_list(&[("G", "[MISS]")])],
+    );
+    let mut ce = MemEnv::new();
+    let env = PmtcEnv::new();
+
+    let (_, pd) = plan(&vec!["a".to_string()], &c, &env, &mut ce).unwrap();
+    assert!(pd.u.contains("MISS"));
+    assert_eq!(pd.task.len(), 1);
+    // 初始化 `[env]` 阶段 的 use 不应算到 task 的 env_use.
+    assert!(pd.task[0].env_use.is_empty());
+    assert!(pd.task[0].u.is_empty());
+}
+
+#[test]
+fn plan_debug_env_for_use() {
+    let c = conf(
+        vec![
+            (
+                "gen",
+                vec![task(&[("N", "[M]-x")], Some("_env"), Some("f"), &[])],
+            ),
+            ("_env", vec![task(&[("M", "[BASE]")], None, None, &[])]),
+        ],
+        vec![("f", f_task(Some(PmtcFA::Echo(hs("[N]".to_string())))))],
+    );
+    let mut ce = MemEnv::new();
+    let mut env = PmtcEnv::new();
+    env.set("BASE", "b");
+
+    let (_, pd) = plan(&vec!["gen".to_string()], &c, &env, &mut ce).unwrap();
+    assert_eq!(pd.task.len(), 1);
+
+    let used = &pd.task[0].env_use;
+    assert!(used.contains(&("BASE".to_string(), PMTC_ENV_LABEL_DEFAULT)));
+    assert!(used.contains(&("M".to_string(), PMTC_ENV_LABEL_DEFAULT)));
+    assert!(used.contains(&("N".to_string(), PMTC_ENV_LABEL_DEFAULT)));
+    assert!(pd.task[0].u.is_empty());
+}
+
+#[test]
+fn plan_debug_env_for_unknown() {
+    let c = conf(
+        vec![
+            (
+                "gen",
+                vec![task(&[("N", "[M]")], Some("_env"), Some("f"), &[])],
+            ),
+            ("_env", vec![task(&[("M", "[MISS]")], None, None, &[])]),
+        ],
+        vec![("f", f_task(Some(PmtcFA::Echo(hs("[N]".to_string())))))],
+    );
+    let mut ce = MemEnv::new();
+    let env = PmtcEnv::new();
+
+    let (_, pd) = plan(&vec!["gen".to_string()], &c, &env, &mut ce).unwrap();
+    assert_eq!(pd.task.len(), 1);
+    assert!(pd.task[0].u.contains("MISS"));
 }

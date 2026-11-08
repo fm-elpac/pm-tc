@@ -58,6 +58,29 @@ fn exec_eval_home_and_split() {
 }
 
 #[test]
+fn home_missing_keeps_tilde() {
+    let env = PmtcEnv::new();
+
+    // 缺失 HOME 时, get_home 用 `~` 占位, 使 `~` 路径 保持原样.
+    let home = get_home(&env);
+    assert_eq!(home, "~");
+
+    assert_eq!(path_home("~/a".to_string(), &home), "~/a");
+    assert_eq!(path_home("~".to_string(), &home), "~");
+    assert_eq!(path_home("~/".to_string(), &home), "~/");
+    assert_eq!(path_home("/x".to_string(), &home), "/x");
+    assert_eq!(path_home("~user/x".to_string(), &home), "~user/x");
+}
+
+#[test]
+fn exec_eval_home_missing() {
+    let env = PmtcEnv::new();
+
+    // 缺失 HOME 时, `~` 路径 不展开.
+    assert_eq!(exec_eval("~/a", &env, 16).unwrap(), vec!["~/a".to_string()]);
+}
+
+#[test]
 fn conf_env_in_order() {
     let mut env = PmtcEnv::new();
     env.set("A", "1");
@@ -69,10 +92,26 @@ fn conf_env_in_order() {
     let mut l2 = PmtcEnvList::new();
     l2.add("C", "[A]", SrcP::new(0, 2));
 
-    let out = conf_env(&env, vec![l1, l2], 16).unwrap();
+    let (out, _) = conf_env(&env, vec![l1, l2], 16).unwrap();
     assert_eq!(out.get("A").unwrap().as_str(), "2");
     assert_eq!(out.get("B").unwrap().as_str(), "1x");
     assert_eq!(out.get("C").unwrap().as_str(), "2");
+}
+
+#[test]
+fn conf_env_rm() {
+    let mut env = PmtcEnv::new();
+    env.set("A", "1");
+    env.set("B", "2");
+
+    let mut l = PmtcEnvList::new();
+    l.add_rm("A", SrcP::new(0, 0));
+    l.add("C", "[B]", SrcP::new(0, 1));
+
+    let (out, _) = conf_env(&env, vec![l], 16).unwrap();
+    assert!(out.get("A").is_none());
+    assert_eq!(out.get("B").as_deref(), Some("2"));
+    assert_eq!(out.get("C").as_deref(), Some("2"));
 }
 
 // ===== 错误情况 (只判断 出错, 不看具体错误信息) =====
@@ -124,4 +163,104 @@ fn err_eval_rec() {
     let env = PmtcEnv::new();
     // `[2:x]` 需要 递归展开, 但 r = 0 不允许 递归
     assert!(eval("[2:x]", &env, 0).is_err());
+}
+
+// ===== 新功能 (eval_use / exec_eval_use) =====
+
+#[test]
+fn eval_use_marks_use_and_unknown() {
+    let mut env = PmtcEnv::new();
+    env.set("A", "1");
+    env.set_label("B", "2", PMTC_ENV_LABEL_SYS);
+
+    let mut u = HashSet::new();
+    let r = eval_use("[A][B][MISS]", &mut env, 16, &mut u).unwrap();
+    assert_eq!(r, "12");
+
+    let used = env.use_get();
+    assert!(used.contains(&("A".to_string(), PMTC_ENV_LABEL_DEFAULT)));
+    assert!(used.contains(&("B".to_string(), PMTC_ENV_LABEL_SYS)));
+    assert_eq!(used.len(), 2);
+    assert!(u.contains("MISS"));
+    assert_eq!(u.len(), 1);
+}
+
+#[test]
+fn exec_eval_use_marks_use_and_unknown() {
+    let mut env = PmtcEnv::new();
+    env.set("HOME", "/h");
+    env.set("X", "v");
+
+    let mut u = HashSet::new();
+    let a = exec_eval_use("echo [X] [MISS] ~/a", &mut env, 16, &mut u).unwrap();
+    assert_eq!(
+        a,
+        vec!["echo".to_string(), "v".to_string(), "/h/a".to_string()]
+    );
+
+    let used = env.use_get();
+    assert!(used.contains(&("X".to_string(), PMTC_ENV_LABEL_DEFAULT)));
+    assert!(!used.contains(&("HOME".to_string(), PMTC_ENV_LABEL_DEFAULT)));
+    assert!(u.contains("MISS"));
+}
+
+#[test]
+fn conf_env_unknown() {
+    let env = PmtcEnv::new();
+
+    let mut l = PmtcEnvList::new();
+    l.add("A", "[MISS]", SrcP::new(0, 0));
+
+    let (out, u) = conf_env(&env, vec![l], 16).unwrap();
+    assert_eq!(out.get("A").as_deref(), Some(""));
+    assert!(u.contains("MISS"));
+}
+
+// ===== 旧功能 补充测试 =====
+
+#[test]
+fn eval_end_escape() {
+    let mut env = PmtcEnv::new();
+    env.set("A", "x");
+
+    let v = eval(r"\[[A]\]", &env, 16).unwrap();
+    assert_eq!(end(&v).unwrap(), "[x]");
+}
+
+#[test]
+fn parse_t_parts() {
+    let p = parse_t("a[b]c").unwrap();
+    assert_eq!(p.len(), 3);
+    match &p[0] {
+        Part::S(s) => assert_eq!(s, "a"),
+        _ => panic!("part 0 不是普通字符串"),
+    }
+    match &p[1] {
+        Part::V(v) => assert_eq!(v.name, "b"),
+        _ => panic!("part 1 不是变量"),
+    }
+    match &p[2] {
+        Part::S(s) => assert_eq!(s, "c"),
+        _ => panic!("part 2 不是普通字符串"),
+    }
+}
+
+#[test]
+fn check_t_ok() {
+    assert_eq!(check_t("[a]").unwrap(), "[a]");
+}
+
+#[test]
+fn p_env_use_clear_and_rm() {
+    let mut env = PmtcEnv::new();
+    env.set("A", "1");
+
+    assert_eq!(env.get_use("A").as_deref(), Some("1"));
+    assert_eq!(env.use_get().len(), 1);
+
+    env.use_clear();
+    assert!(env.use_get().is_empty());
+
+    assert_eq!(env.rm("A").map(|i| i.0).as_deref(), Some("1"));
+    assert!(env.get("A").is_none());
 }

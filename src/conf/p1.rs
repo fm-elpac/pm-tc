@@ -1,7 +1,7 @@
 //! 带位置信息的 TOML 反序列化实现 (只实现 de 部分).
 //!
 //! `toml_edit` 内置的 serde 实现是基于 `&str` 的流式解析, 无法提供 源位置 (`span`).
-//! 这里的实现直接 遍历 `toml_edit` 的 DOM (`DocumentMut`), 通过 serde 的
+//! 这里的实现直接 遍历 `toml_edit` 的 DOM (`Document<String>`), 通过 serde 的
 //! `Deserializer` 把数据反序列化成 带 `SrcP` 的 中间结构 (`P1` 等).
 //!
 //! 设计要点:
@@ -23,9 +23,57 @@ use serde::{
     Deserialize,
     de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Unexpected, Visitor},
 };
-use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, Value};
+use toml_edit::{Array, ArrayOfTables, Document, Item, Table, Value};
+
+use crate::te::EnvVar;
 
 use super::{ConfError, HasP, SrcP};
+
+// ===== EnvVar 的 Deserialize =====
+
+impl<'de> Deserialize<'de> for EnvVar {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct V;
+
+        impl<'de> Visitor<'de> for V {
+            type Value = EnvVar;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a string or the integer 0")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(EnvVar::Set(v.to_string()))
+            }
+
+            fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(EnvVar::Set(v))
+            }
+
+            fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                if v == 0 {
+                    Ok(EnvVar::Rm)
+                } else {
+                    Err(E::invalid_value(Unexpected::Signed(v), &self))
+                }
+            }
+        }
+
+        deserializer.deserialize_any(V)
+    }
+}
 
 // ===== 线程本地 位置/名称 栈 =====
 
@@ -248,10 +296,9 @@ impl<'de> D<'de> {
     }
 
     fn from_table(t: &'de Table, file_id: usize) -> Self {
-        let i = t
-            .position()
-            .or_else(|| t.span().map(|s| s.start as isize))
-            .unwrap_or(0);
+        // 使用 span 的字节偏移 (表头位置). `Table::position()` 是 表头序号 (1, 2, ...),
+        // 不是 字节偏移, 不能用于 计算行号.
+        let i = t.span().map(|s| s.start as isize).unwrap_or(0);
         Self {
             node: Node::Table(t),
             src: SrcP::new(file_id, i),
@@ -543,7 +590,7 @@ pub(super) struct P1 {
     pub(super) pm_tc: i64,
     pub(super) eval_rec: Option<HasP<i64>>,
     #[serde(default)]
-    pub(super) include: Vec<Include1>,
+    pub(super) include: Vec<HasP<Include1>>,
     #[serde(default)]
     pub(super) env: Env1,
     #[serde(default)]
@@ -563,7 +610,7 @@ pub(super) struct Include1 {
 #[derive(Debug, Clone, Default)]
 pub(super) struct Env1 {
     /// (name, key 位置, value)
-    pub(super) list: Vec<(String, SrcP, HasP<String>)>,
+    pub(super) list: Vec<(String, SrcP, HasP<EnvVar>)>,
 }
 
 impl<'de> Deserialize<'de> for Env1 {
@@ -587,7 +634,7 @@ impl<'de> Deserialize<'de> for Env1 {
                 let mut list = Vec::new();
                 while let Some(k) = map.next_key::<String>()? {
                     let ks = cur_key_span();
-                    let value = map.next_value::<HasP<String>>()?;
+                    let value = map.next_value::<HasP<EnvVar>>()?;
                     list.push((k, ks, value));
                 }
                 Ok(Env1 { list })
@@ -737,8 +784,8 @@ pub(super) struct F1 {
 
 // ===== 入口 =====
 
-/// 从 `DocumentMut` 反序列化 (带位置).
-pub(super) fn p1_de<'de, T>(doc: &'de DocumentMut, file_id: usize) -> Result<T, ConfError>
+/// 从 `Document<String>` 反序列化 (带位置).
+pub(super) fn p1_de<'de, T>(doc: &'de Document<String>, file_id: usize) -> Result<T, ConfError>
 where
     T: Deserialize<'de>,
 {

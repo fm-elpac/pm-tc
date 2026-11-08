@@ -266,10 +266,10 @@ pub fn norm_path(p: &Path) -> PathBuf {
                 Some(Component::Normal(_)) => {
                     out.pop();
                 }
-                Some(Component::ParentDir) => {
+                Some(Component::ParentDir) | None => {
                     out.push("..");
                 }
-                Some(Component::RootDir) | None => {}
+                Some(Component::RootDir) => {}
                 Some(_) => {
                     out.push("..");
                 }
@@ -284,3 +284,6 @@ pub fn norm_path(p: &Path) -> PathBuf {
 pub fn te_err(src: SrcP, e: TeError) -> HasPD<TeError> {
     HasPD::new(src, e)
 }
+
+#[cfg(test)]
+mod test;

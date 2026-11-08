@@ -1,7 +1,7 @@
 //! 配置文件解析的 业务校验 实现.
 //!
 //! 解析分为 2 个阶段:
-//! 1. 阶段 1: 使用 [`super::p1`] 把 `toml_edit::DocumentMut` 反序列化为
+//! 1. 阶段 1: 使用 [`super::p1`] 把 `toml_edit::Document<String>` 反序列化为
 //!    带位置的 中间结构 (`P1`), 只检查 toml 内容是否 符合 抽象数据结构.
 //! 2. 阶段 2: 在 阶段 1 结果的基础上, 转换数据 为 `PmtcConfFile`, 并做
 //!    剩余的 错误检查 (`check_name`, `check_t`, 动作分派 等).
@@ -13,11 +13,11 @@ use std::{
 };
 
 use serde::{Deserialize, de::IntoDeserializer};
-use toml_edit::{DocumentMut, Item, TomlError};
+use toml_edit::{Document, Item, TomlError};
 
 use crate::{
     check::te_err,
-    te::{PmtcEnvList, TeError, check_name, check_t},
+    te::{EnvVar, PmtcEnvList, TeError, check_name, check_t},
 };
 
 use super::{
@@ -207,7 +207,7 @@ fn get_int(item: &Item, src: SrcP, key: &str) -> CResult<i64> {
 /// 检查 配置文件 格式 版本号 (`pm_tc`).
 ///
 /// 必须在 任何 其他 数据处理 之前 调用.
-fn check_version(doc: &DocumentMut, file_id: usize) -> CResult<()> {
+fn check_version(doc: &Document<String>, file_id: usize) -> CResult<()> {
     let item = match doc.get("pm_tc") {
         Some(i) => i,
         None => {
@@ -281,11 +281,11 @@ fn p1_to_conf(p1: P1, file_id: usize) -> CResult<PmtcConfFile> {
     // `[[include]]`: 只允许 `file`, 缺少 `file` 报错, 去重.
     let mut include = Vec::new();
     for inc in &p1.include {
-        match &inc.file {
+        match &inc.as_ref().file {
             Some(f) => include.push(HasP::new(f.src(), f.as_ref().clone())),
             None => {
                 return Err(ConfError::value(
-                    SrcP::new(file_id, 0),
+                    inc.src(),
                     "missing",
                     "`[[include]]` missing `file`",
                     &[("key", "file".to_string())],
@@ -309,8 +309,15 @@ fn p1_to_conf(p1: P1, file_id: usize) -> CResult<PmtcConfFile> {
     let mut env = PmtcEnvList::new();
     for (name, ks, value) in &p1.env.list {
         check_env_name(name, *ks)?;
-        check_t(value.as_ref()).map_err(|e| e_te(value.src(), e))?;
-        env.add(name, value.as_ref(), value.src());
+        match value.as_ref() {
+            EnvVar::Set(v) => {
+                check_t(v).map_err(|e| e_te(value.src(), e))?;
+                env.add(name, v, value.src());
+            }
+            EnvVar::Rm => {
+                env.add_rm(name, value.src());
+            }
+        }
     }
 
     // `[[t.*]]`: 检查 允许的 key, 变量名称, 模板语法.
@@ -368,7 +375,7 @@ fn p1_to_conf(p1: P1, file_id: usize) -> CResult<PmtcConfFile> {
     // `[[f]]`: 检查 允许的 key, 类型, `once` 取值, 模板语法, name 去重, 动作分派.
     let mut f: HashMap<String, HasP<PmtcF>> = HashMap::new();
     for hf in &p1.f {
-        let f2 = f1_to_f2(hf.as_ref(), file_id)?;
+        let f2 = f1_to_f2(hf.as_ref(), file_id, hf.src())?;
         let name = f2.name.as_ref().clone();
         if f.contains_key(&name) {
             return Err(ConfError::value(
@@ -393,11 +400,28 @@ fn p1_to_conf(p1: P1, file_id: usize) -> CResult<PmtcConfFile> {
 }
 
 /// `[[f]]` 中间结构 (`F1`) -> `F2`.
-fn f1_to_f2(f1: &F1, file_id: usize) -> CResult<F2> {
-    let name = f1
-        .name
-        .clone()
-        .unwrap_or_else(|| HasP::new(SrcP::new(file_id, 0), String::new()));
+///
+/// `fsrc` 是 `[[f]]` 表头的位置, 用于 缺少 `name` 时 报错.
+fn f1_to_f2(f1: &F1, file_id: usize, fsrc: SrcP) -> CResult<F2> {
+    let name = match &f1.name {
+        None => {
+            return Err(ConfError::value(
+                fsrc,
+                "missing",
+                "`[[f]]` missing `name`",
+                &[("key", "name".to_string())],
+            ));
+        }
+        Some(h) if h.as_ref().is_empty() => {
+            return Err(ConfError::value(
+                h.src(),
+                "empty",
+                "`[[f]]` `name` must not be empty",
+                &[("key", "name".to_string())],
+            ));
+        }
+        Some(h) => h.clone(),
+    };
     let once = match &f1.once {
         Some(h) => {
             let n = *h.as_ref();
@@ -706,7 +730,7 @@ fn f2_to_f(f2: F2) -> CResult<HasP<PmtcF>> {
 ///
 /// file_id: 用于生成错误.
 pub fn parse(src: &str, file_id: usize) -> Result<PmtcConfFile, Box<dyn Error>> {
-    let doc: DocumentMut = src.parse().map_err(|e: TomlError| {
+    let doc: Document<String> = src.parse().map_err(|e: TomlError| {
         let p = e.span().map(|s| s.start as isize).unwrap_or(0);
         ConfError::Toml(HasPD::new(SrcP::new(file_id, p), e))
     })?;

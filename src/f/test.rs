@@ -1,9 +1,11 @@
 use std::{
     fs,
-    os::unix::fs::PermissionsExt,
     path::PathBuf,
     sync::atomic::{AtomicU32, Ordering},
 };
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use super::*;
 
@@ -58,6 +60,7 @@ fn file_replace_append_read() {
     assert_eq!(file_read(p).unwrap(), "hello world");
 }
 
+#[cfg(unix)]
 #[test]
 fn chmod_works() {
     let t = TempDir::new();

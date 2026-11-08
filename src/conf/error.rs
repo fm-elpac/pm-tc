@@ -95,6 +95,24 @@ impl SrcInfo {
             (path, line)
         })
     }
+
+    /// 获取 文件名 (路径), 行号, 列号 (1 起始).
+    pub fn info_col(&self, src: &SrcP) -> Result<(String, usize, usize), ConfError> {
+        self.check_file_id(src.file_id).map(|i| {
+            let path = self.path[i].clone();
+
+            let p = src.i.max(0) as usize;
+            let lines = &self.line[i];
+            let n = lines.partition_point(|&n| n < p);
+            let line = n + 1;
+            // 行首偏移: 第 1 行从 0 开始, 其余行 从 上一个 `\n` 之后开始.
+            let line_start = if n == 0 { 0 } else { lines[n - 1] + 1 };
+            // 列号 (1 起始, 按字节).
+            let col = p - line_start + 1;
+
+            (path, line, col)
+        })
+    }
 }
 
 /// 计算文件中各行的偏移 (`\n` 出现位置)

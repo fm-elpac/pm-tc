@@ -1,5 +1,12 @@
 //! 底层基础操作 (默认执行器)
-use std::{error::Error, fmt, fs, io::Write, os::unix::fs::PermissionsExt, process::Command};
+//!
+//! 处理原则: 当前平台不支持的操作, 不直接报错, 而是替换为 空操作 (nop),
+//! 并通过 log::warn!() 输出简短警告 (包含必要参数, 便于调试).
+//! 这样 pm-tc 在更多平台上 也能编译通过.
+use std::{error::Error, fmt, fs, io::Write, process::Command};
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use log::{debug, error, info, trace, warn};
 
@@ -89,12 +96,21 @@ pub fn mkdir(path: &str) -> Result<(), Box<dyn Error>> {
 }
 
 /// chmod
+#[cfg(unix)]
 pub fn chmod(path: &str, mode: u32) -> Result<(), Box<dyn Error>> {
     info!("chmod {} {}", mode, path);
 
     let mut perms = fs::metadata(path)?.permissions();
     perms.set_mode(mode);
     Ok(fs::set_permissions(path, perms)?)
+}
+
+/// chmod (不支持 chmod 的平台)
+/// 空操作: 仅输出警告, 便于调试.
+#[cfg(not(unix))]
+pub fn chmod(path: &str, mode: u32) -> Result<(), Box<dyn Error>> {
+    log::warn!("chmod unsupported: mode {:#o} path {}", mode, path);
+    Ok(())
 }
 
 /// cat

@@ -14,16 +14,16 @@ cargo build --release
 
 ## Command Line
 
-| Command                       | Description                            |
-| ----------------------------- | -------------------------------------- |
-| `pm-tc TASK ...`              | Run tasks                              |
-| `pm-tc --plan TASK ...`       | Print the plan only (no execution)     |
-| `pm-tc --plan-debug TASK ...` | Print the plan and internal debug info |
-| `pm-tc --eval EXPR`           | Evaluate a template                    |
-| `pm-tc --end EXPR`            | Unescape a string                      |
-| `pm-tc --exec-eval EXPR`      | Evaluate an exec command               |
-| `pm-tc --env EXPR`            | Print debug variables (TODO)           |
-| `pm-tc --help` / `--help-zh`  | Help (English / Chinese)               |
+| Command                         | Description                            |
+| ------------------------------- | -------------------------------------- |
+| `pm-tc TASK ...`                | Run tasks                              |
+| `pm-tc --plan [TASK ...]`       | Print the plan only (no execution)     |
+| `pm-tc --plan-debug [TASK ...]` | Print the plan and internal debug info |
+| `pm-tc --eval EXPR`             | Evaluate a template                    |
+| `pm-tc --end EXPR`              | Unescape a string                      |
+| `pm-tc --exec-eval EXPR`        | Evaluate an exec command               |
+| `pm-tc --env [TASK ...]`        | Print used system env vars (JSON)      |
+| `pm-tc --help` / `--help-zh`    | Help (English / Chinese)               |
 
 By default it reads `pm_tc.conf.toml` from the current directory; use
 `PMTC_CONF` to specify another file.
@@ -53,8 +53,10 @@ a = "exec"
 exec_eval = "[2:ssh_keygen]"
 ```
 
+- `eval_rec`: max template recursion depth (default 16, CLI max 200).
 - `[[include]]`: include other config files.
-- `[env]`: define variables, evaluated in order (later overrides earlier).
+- `[env]`: define/remove variables, evaluated in order; a string value sets
+  (overrides) the variable, and the integer `0` removes it.
 - `[[t.NAME]]`: define a task; multiple instances of the same name are allowed.
   - `env_for`: reference another task's variables (without running it).
   - `f`: name of the `[[f]]` to call.
@@ -101,11 +103,19 @@ Built-in variables:
 
 ## Environment Variables
 
-| Variable    | Description                                            |
-| ----------- | ------------------------------------------------------ |
-| `PMTC_CONF` | Config file path (default `pm_tc.conf.toml`)           |
-| `PMTC_ENV`  | Saved-variable file (default `pm_tc.env`)              |
-| `PMTC_REC`  | Max template recursion depth (default 16, CLI max 200) |
+| Variable    | Description                                                                         |
+| ----------- | ----------------------------------------------------------------------------------- |
+| `PMTC_CONF` | Config file path (default `pm_tc.conf.toml`)                                        |
+| `PMTC_ENV`  | Saved-variable file (default `pm_tc.env`)                                           |
+| `PMTC_REC`  | Max template recursion depth (overrides `eval_rec`; default 16, CLI max 200)        |
+| `PMTC_JSON` | Set to `1` to emit JSONL for `--plan`/`--plan-debug`/`--eval`/`--end`/`--exec-eval` |
+
+## Runtime Assumptions
+
+While pm-tc runs (building a plan or executing tasks), it assumes the external
+environment stays unchanged: no other program or user action conflicts with, or
+runs concurrently with, pm-tc. You must guarantee this; pm-tc does not handle
+failures or bugs caused by such interference.
 
 ## Examples
 

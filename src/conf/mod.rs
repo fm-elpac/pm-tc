@@ -3,8 +3,6 @@
 //! 原则: 除非 实现特别复杂 (动态执行), 否则应该在 配置 阶段尽可能多的做错误检查,
 //! 而不是把 错误 推迟到 执行 阶段.
 //!
-#[cfg(feature = "cli")]
-use std::env;
 use std::{
     collections::{HashMap, HashSet},
     error::Error,
@@ -45,19 +43,8 @@ pub const ENV_PMTC_ENV: &'static str = "PMTC_ENV";
 pub const PMTC_DEFAULT_EVAL_REC: u16 = 16;
 /// 可使用 `PMTC_REC` 环境变量 指定 允许的最大递归深度
 pub const ENV_PMTC_REC: &'static str = "PMTC_REC";
-
-/// 获取 执行模板时, 允许的最大递归深度
-#[cfg(feature = "cli")]
-pub fn get_eval_rec() -> u16 {
-    let r = env::var(ENV_PMTC_REC)
-        .ok()
-        .map(|i| i.parse::<u16>().ok())
-        .flatten()
-        .unwrap_or(PMTC_DEFAULT_EVAL_REC);
-    // 此函数用于 CLI, 目前最大支持 200
-    let max = 200;
-    if r > max { max } else { r }
-}
+/// 可使用 `PMTC_JSON` 环境变量 指定 JSON 输出 (`1` 启用)
+pub const ENV_PMTC_JSON: &'static str = "PMTC_JSON";
 
 /// pm-tc 单个 配置文件 (*.toml).
 ///
@@ -231,9 +218,9 @@ fn check_task_f(
 }
 
 /// 加载过程中的 状态.
-struct Loader<'a, R: ReadConfFile> {
+struct Loader<'a, 'b, R: ReadConfFile> {
     r: &'a mut R,
-    src: SrcInfo,
+    src: &'b mut SrcInfo,
     /// 按 读取顺序 保存的 已解析 配置文件 (下标 == file_id).
     confs: Vec<PmtcConfFile>,
     /// 加载顺序 (file_id, 后序).
@@ -244,11 +231,11 @@ struct Loader<'a, R: ReadConfFile> {
     visiting: HashSet<PathBuf>,
 }
 
-impl<'a, R: ReadConfFile> Loader<'a, R> {
-    fn new(r: &'a mut R) -> Self {
+impl<'a, 'b, R: ReadConfFile> Loader<'a, 'b, R> {
+    fn new(r: &'a mut R, src: &'b mut SrcInfo) -> Self {
         Self {
             r,
-            src: SrcInfo::new(),
+            src,
             confs: Vec::new(),
             order: Vec::new(),
             loaded: HashSet::new(),
@@ -298,12 +285,19 @@ impl<'a, R: ReadConfFile> Loader<'a, R> {
     }
 }
 
-/// 加载全部 配置文件 (处理 `[[include]]`)
-pub fn load<R: ReadConfFile>(path: &str, r: &mut R) -> Result<PmtcConf, Box<dyn Error>> {
-    let mut l = Loader::new(r);
+/// 加载全部 配置文件 (处理 `[[include]]`).
+///
+/// `src` 用于 记录 源文件信息, 加载失败时 也会保留 已读取的 源文件.
+pub fn load<R: ReadConfFile>(
+    path: &str,
+    r: &mut R,
+    src: &mut SrcInfo,
+) -> Result<PmtcConf, Box<dyn Error>> {
+    let mut l = Loader::new(r, src);
     let main_id = l.load_file(&norm_path(Path::new(path)))?;
 
     // eval_rec: 直接 使用 主配置文件 中的值, 否则 使用 默认值. 不检查 环境变量.
+    // (库接口 不受 CLI 的 上限/PMTC_REC 限制; 由 CLI 在 调用 task::plan 前 处理.)
     let eval_rec = match &l.confs[main_id].eval_rec {
         Some(h) => *h.as_ref(),
         None => PMTC_DEFAULT_EVAL_REC,
@@ -358,7 +352,7 @@ pub fn load<R: ReadConfFile>(path: &str, r: &mut R) -> Result<PmtcConf, Box<dyn 
         env,
         task,
         f,
-        src: l.src,
+        src: l.src.clone(),
     })
 }
 
