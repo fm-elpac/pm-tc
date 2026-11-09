@@ -3,14 +3,17 @@
 //! 原则: 除非 实现特别复杂 (动态执行), 否则应该在 配置 阶段尽可能多的做错误检查,
 //! 而不是把 错误 推迟到 执行 阶段.
 //!
+//! 路径约定: 配置文件 中 的 路径 与 本模块 内部 路径 均使用 UNIX 形式 (`/` 分隔),
+//! 即使 运行在 Windows 上 (见 `check::norm_path`).
+//!
 use std::{
     collections::{HashMap, HashSet},
     error::Error,
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use crate::{
-    check::{MissingRef, check_dep_cycle, dep_edges, norm_path},
+    check::{MissingRef, check_dep_cycle, dep_edges, norm_path, to_unix_path},
     te::PmtcEnvList,
 };
 
@@ -225,10 +228,10 @@ struct Loader<'a, 'b, R: ReadConfFile> {
     confs: Vec<PmtcConfFile>,
     /// 加载顺序 (file_id, 后序).
     order: Vec<usize>,
-    /// 已完成 加载 的 配置文件 (归一化 路径).
-    loaded: HashSet<PathBuf>,
-    /// 当前 递归访问 栈 中的 配置文件 (用于 检测 循环).
-    visiting: HashSet<PathBuf>,
+    /// 已完成 加载 的 配置文件 (归一化 路径, UNIX 形式).
+    loaded: HashSet<String>,
+    /// 当前 递归访问 栈 中的 配置文件 (用于 检测 循环, UNIX 形式).
+    visiting: HashSet<String>,
 }
 
 impl<'a, 'b, R: ReadConfFile> Loader<'a, 'b, R> {
@@ -245,22 +248,24 @@ impl<'a, 'b, R: ReadConfFile> Loader<'a, 'b, R> {
 
     /// 深度优先 处理 一个 配置文件, 返回其 file_id.
     ///
-    /// `path` 必须是 归一化 后的 路径.
-    fn load_file(&mut self, path: &Path) -> Result<usize, Box<dyn Error>> {
+    /// `path` 必须是 归一化 后的 UNIX 形式 路径.
+    fn load_file(&mut self, path: &str) -> Result<usize, Box<dyn Error>> {
         let key = norm_path(path);
-        let path_str = key.to_string_lossy();
 
-        let text = self.r.read(path_str.as_ref())?;
-        let file_id = self.src.add(path_str.into_owned(), text.clone());
+        let text = self.r.read(&key)?;
+        let file_id = self.src.add(key.clone(), text.clone());
         let conf = parse(&text, file_id)?;
         let includes = conf.include.clone();
         self.confs.push(conf);
 
         self.visiting.insert(key.clone());
 
-        let dir = key.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
+        // 上级目录, 用于 解析 `include` 的 相对路径. 用 std::path 处理,
+        // 输出前 转为 UNIX 形式.
+        let dir = Path::new(&key).parent().unwrap_or_else(|| Path::new(""));
         for inc in &includes {
-            let inc_key = norm_path(&dir.join(inc.as_ref()));
+            let inc_path = dir.join(inc.as_ref());
+            let inc_key = norm_path(&to_unix_path(inc_path.to_string_lossy().into_owned()));
             if self.loaded.contains(&inc_key) {
                 continue;
             }
@@ -268,10 +273,7 @@ impl<'a, 'b, R: ReadConfFile> Loader<'a, 'b, R> {
                 let mut p = HashMap::new();
                 p.insert("file".to_string(), inc.as_ref().clone());
                 return Err(Box::new(ConfError::IncludeCycle((
-                    HasPD::new(
-                        inc.src(),
-                        format!("include cycle: `{}`", inc_key.to_string_lossy()),
-                    ),
+                    HasPD::new(inc.src(), format!("include cycle: `{}`", inc_key)),
                     p,
                 ))));
             }
@@ -294,7 +296,7 @@ pub fn load<R: ReadConfFile>(
     src: &mut SrcInfo,
 ) -> Result<PmtcConf, Box<dyn Error>> {
     let mut l = Loader::new(r, src);
-    let main_id = l.load_file(&norm_path(Path::new(path)))?;
+    let main_id = l.load_file(&norm_path(path))?;
 
     // eval_rec: 直接 使用 主配置文件 中的值, 否则 使用 默认值. 不检查 环境变量.
     // (库接口 不受 CLI 的 上限/PMTC_REC 限制; 由 CLI 在 调用 task::plan 前 处理.)

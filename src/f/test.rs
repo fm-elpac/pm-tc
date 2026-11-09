@@ -72,6 +72,7 @@ fn chmod_works() {
     assert_eq!(mode, 0o700);
 }
 
+#[cfg(unix)]
 #[test]
 fn exec_and_exec_sh() {
     exec(&vec!["true".to_string()]).unwrap();
@@ -86,6 +87,7 @@ fn log_noop() {
     log(&vec!["debug".to_string(), "a".to_string()]).unwrap();
 }
 
+#[cfg(unix)]
 #[test]
 fn exec_err() {
     assert!(exec(&vec!["false".to_string()]).is_err());

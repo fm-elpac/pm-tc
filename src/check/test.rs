@@ -1,9 +1,8 @@
 use super::*;
-use std::path::Path;
 
 /// 归一化路径, 转为字符串 (便于断言).
 fn n(p: &str) -> String {
-    norm_path(Path::new(p)).to_string_lossy().into_owned()
+    norm_path(p)
 }
 
 // ===== `.` 和 `..` 在 路径中间 的 情况 =====
@@ -39,4 +38,12 @@ fn norm_parent_absolute() {
     // 绝对路径 不能越过 根目录.
     assert_eq!(n("/../a"), "/a");
     assert_eq!(n("/a/../../b"), "/b");
+}
+
+#[test]
+fn to_unix_path_works() {
+    assert_eq!(to_unix_path("a/b".into()), "a/b");
+    // 在 Windows 上 `\` 会被转换为 `/`; 在 UNIX 上 本函数 是 空操作.
+    #[cfg(windows)]
+    assert_eq!(to_unix_path("a\\b".into()), "a/b");
 }

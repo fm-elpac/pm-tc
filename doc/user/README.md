@@ -69,6 +69,10 @@ exec_eval = "[2:ssh_keygen]"
   - `dep`: 依赖的 f.
   - `a`: 动作类型 (见下).
 
+路径约定: 配置文件 中的 路径 (例如 `include` 的 `file`, `path_eval`,
+`file_eval`, `skip_file_eval` 等) 一律使用 UNIX 形式 (`/` 分隔), 即使运行在
+Windows 上.
+
 ## 动作 `a`
 
 | 动作          | 参数                     | 说明                                             |
@@ -97,6 +101,42 @@ exec_eval = "[2:ssh_keygen]"
 内置变量:
 
 - `date` (当前日期 `yyyyMMdd`)
+
+## 命令参数切分 (`exec` / `exec_eval`)
+
+`exec` 动作使用 `exec_eval` 求值命令并切分参数. pm-tc 不使用 shell 的 引号 /
+转义规则, 而是按空格直接切分. 这并非能力缺失: 模板引擎本身已经 提供了等价能力,
+无需再引入引号 / 转义那一套. (`exec_sh` 同样接受 `exec_eval` 字段,
+但它把整串文本交给 `sh -c`, 不做切分.)
+
+`exec_eval` 的求值过程:
+
+1. 对整个字符串执行一次 `eval()` 模板展开.
+2. 按空格 (ASCII 空白) 切分, 得到参数列表.
+3. 对每个参数再执行一次 `eval()`, 然后去转义 (`end()`), 并展开 `~` 路径.
+
+因此, 只要把含空格的变量延迟到切分之后才展开, 就能正确传递带空格的参数:
+
+```toml
+[env]
+A = "test 666"
+B = "222 hello"
+
+[[f]]
+name = "test1"
+a = "exec"
+exec_eval = "touch [:A] [:B]"
+```
+
+求值过程:
+
+1. 第一次 `eval()`: `"touch [:A] [:B]"` -> `"touch [A] [B]"`. (`[:A]`
+   表示本次不展开, 所以先变成 `[A]`.)
+2. 按空格切分: `["touch", "[A]", "[B]"]`.
+3. 第二次逐个 `eval()`: `["touch", "test 666", "222 hello"]`.
+
+最终执行 `touch` 的参数为 `test 666` 与 `222 hello`, 参数中的空格被正确 保留,
+且无歧义.
 
 ## 环境变量
 

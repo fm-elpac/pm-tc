@@ -70,6 +70,10 @@ exec_eval = "[2:ssh_keygen]"
   - `dep`: dependent functions.
   - `a`: action type (see below).
 
+Path convention: paths in the config file (for example `include` `file`,
+`path_eval`, `file_eval`, `skip_file_eval`) always use UNIX form (`/`
+separated), even when running on Windows.
+
 ## Action `a`
 
 | Action        | Parameters               | Description                                             |
@@ -100,6 +104,46 @@ variables can also be used.
 Built-in variables:
 
 - `date` (current date `yyyyMMdd`)
+
+## Command Argument Splitting (`exec` / `exec_eval`)
+
+The `exec` action uses `exec_eval` to evaluate its command and split it into
+arguments. pm-tc does not use shell quoting / escaping rules; it splits on
+spaces directly. This is not a missing capability: the template engine already
+provides the equivalent, so there is no need to introduce quoting / escaping.
+(`exec_sh` also accepts the `exec_eval` field, but it passes the whole text to
+`sh -c` without splitting.)
+
+`exec_eval` evaluates as follows:
+
+1. Evaluate the whole string once with `eval()` (template expansion).
+2. Split on spaces (ASCII whitespace) into a list of arguments.
+3. Evaluate each argument again with `eval()`, then unescape (`end()`), and
+   expand `~` paths.
+
+Therefore, arguments containing spaces can be passed correctly by deferring
+their expansion until after splitting:
+
+```toml
+[env]
+A = "test 666"
+B = "222 hello"
+
+[[f]]
+name = "test1"
+a = "exec"
+exec_eval = "touch [:A] [:B]"
+```
+
+Evaluation steps:
+
+1. First `eval()`: `"touch [:A] [:B]"` -> `"touch [A] [B]"`. (`[:A]` means "do
+   not expand this time", so it first becomes `[A]`.)
+2. Split on spaces: `["touch", "[A]", "[B]"]`.
+3. Second per-argument `eval()`: `["touch", "test 666", "222 hello"]`.
+
+The final `touch` arguments are `test 666` and `222 hello`; spaces inside
+arguments are preserved with no ambiguity.
 
 ## Environment Variables
 

@@ -1,7 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
     error::Error,
-    path::{Path, PathBuf},
 };
 
 use crate::{
@@ -492,14 +491,14 @@ impl<C: CheckEnv> Planner<'_, C> {
         const K_APPEND: u8 = 2;
         const K_MERGE: u8 = 4;
 
-        let mut info: HashMap<PathBuf, PathInfo> = HashMap::new();
-        let mut first_merge: HashMap<PathBuf, usize> = HashMap::new();
+        let mut info: HashMap<String, PathInfo> = HashMap::new();
+        let mut first_merge: HashMap<String, usize> = HashMap::new();
 
         for (i, op) in self.raw.iter().enumerate() {
             match op {
                 RawOp::Run(_) => {}
                 RawOp::Replace { src, path, .. } => {
-                    let e = info.entry(norm_path(Path::new(path))).or_default();
+                    let e = info.entry(norm_path(path)).or_default();
                     e.kinds |= K_REPLACE;
                     e.replace += 1;
                     if e.src.is_none() {
@@ -507,14 +506,14 @@ impl<C: CheckEnv> Planner<'_, C> {
                     }
                 }
                 RawOp::Append { src, path, .. } => {
-                    let e = info.entry(norm_path(Path::new(path))).or_default();
+                    let e = info.entry(norm_path(path)).or_default();
                     e.kinds |= K_APPEND;
                     if e.src.is_none() {
                         e.src = Some(*src);
                     }
                 }
                 RawOp::Merge { src, path, text } => {
-                    let k = norm_path(Path::new(path));
+                    let k = norm_path(path);
                     let e = info.entry(k.clone()).or_default();
                     e.kinds |= K_MERGE;
                     e.merges.push(text.clone());
@@ -531,7 +530,7 @@ impl<C: CheckEnv> Planner<'_, C> {
                 return Err(Box::new(TaskError::FileWrite((
                     HasPD::new(
                         e.src.unwrap_or_default(),
-                        format!("multiple `file_replace` to `{}`", k.display()),
+                        format!("multiple `file_replace` to `{}`", k),
                     ),
                     HashMap::new(),
                 ))));
@@ -540,7 +539,7 @@ impl<C: CheckEnv> Planner<'_, C> {
                 return Err(Box::new(TaskError::FileWrite((
                     HasPD::new(
                         e.src.unwrap_or_default(),
-                        format!("conflicting file writes to `{}`", k.display()),
+                        format!("conflicting file writes to `{}`", k),
                     ),
                     HashMap::new(),
                 ))));
@@ -560,7 +559,7 @@ impl<C: CheckEnv> Planner<'_, C> {
                     out.add(PmtcRunOp::FileAppend((path, text)));
                 }
                 RawOp::Merge { path, .. } => {
-                    let k = norm_path(Path::new(&path));
+                    let k = norm_path(&path);
                     // 只在 第一个 file_merge 的位置 输出 合并后的 file_replace.
                     if first_merge.get(&k) == Some(&i) {
                         let joined = info[&k].merges.join("");
