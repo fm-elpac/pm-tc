@@ -8,9 +8,11 @@ pm-tc (胖喵模板配置工具): 解析/检查 `pm_tc.conf.toml`,
 ```sh
 cargo fmt
 deno fmt
+
 cargo build
 cargo test
 cargo doc
+
 cargo build --release
 ```
 

@@ -131,15 +131,14 @@ fn eval_i<T: EnvUse>(
     Ok(result)
 }
 
-/// `exec_eval` / `exec_eval_use` 实际实现
-fn exec_eval_i<T: EnvUse>(
-    t: &str,
+/// `exec_eval` / `exec_eval_use` 实际实现 (第 2 阶段)
+fn exec_eval_2i<T: EnvUse>(
+    t: String,
     mut env: T,
     r: u16,
     u: &mut HashSet<String>,
 ) -> Result<Vec<String>, TeError> {
-    let c = eval_i(t, &mut env, r, u)?;
-    let a: Vec<String> = c.split_ascii_whitespace().map(|i| i.to_string()).collect();
+    let a: Vec<String> = t.split_ascii_whitespace().map(|i| i.to_string()).collect();
     let mut o: Vec<String> = Vec::new();
 
     let home = get_home(env.as_ref());
@@ -151,6 +150,17 @@ fn exec_eval_i<T: EnvUse>(
         o.push(i);
     }
     Ok(o)
+}
+
+/// `exec_eval` / `exec_eval_use` 实际实现
+fn exec_eval_i<T: EnvUse>(
+    t: &str,
+    mut env: T,
+    r: u16,
+    u: &mut HashSet<String>,
+) -> Result<Vec<String>, TeError> {
+    let c = eval_i(t, &mut env, r, u)?;
+    exec_eval_2i(c, env, r, u)
 }
 
 /// 对 模板 进行 单步展开 (不进行 end 处理).
@@ -187,6 +197,13 @@ pub fn exec_eval(t: &str, env: &PmtcEnv, r: u16) -> Result<Vec<String>, TeError>
     exec_eval_i(t, env, r, &mut u)
 }
 
+/// 类似 `exec_eval` 但只有 第 2 阶段 (即 不首先 eval 整个 字符串)
+pub fn exec_eval_2(t: &str, env: &PmtcEnv, r: u16) -> Result<Vec<String>, TeError> {
+    let env = PmtcEnvNoUse::new(env);
+    let mut u = HashSet::new();
+    exec_eval_2i(t.to_string(), env, r, &mut u)
+}
+
 /// 类似 `exec_eval` 但是会标记 变量使用 (`use`).
 ///
 /// - u: 未知变量
@@ -198,4 +215,15 @@ pub fn exec_eval_use(
 ) -> Result<Vec<String>, TeError> {
     let env = PmtcEnvUse::new(env);
     exec_eval_i(t, env, r, u)
+}
+
+/// 类似 `exec_eval_use` 但只有 第 2 阶段 (即 不首先 eval 整个 字符串)
+pub fn exec_eval_use_2(
+    t: &str,
+    env: &mut PmtcEnv,
+    r: u16,
+    u: &mut HashSet<String>,
+) -> Result<Vec<String>, TeError> {
+    let env = PmtcEnvNoUse::new(env);
+    exec_eval_2i(t.to_string(), env, r, u)
 }

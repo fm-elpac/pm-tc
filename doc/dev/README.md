@@ -40,9 +40,10 @@
 - 错误处理: 每个模块定义自己的错误枚举(`ConfError`, `TeError`, `TaskError`,
   `FError`), 顶层 `PmtcError` 用 `From` 汇总; 错误显示 仅为尽力而为,
   便于开发调试.
-- 依赖 `pm-bin` 提供 CLI 脚手架(`pm_init!`, `init_env_logger`, `cli_arg`,
-  `build_gen`).
-- feature: `cli`(默认, 含 `task` `f`), `task`, `f`.
+- 依赖 `pm-bin`(可选, 仅在启用 `cli` feature 时启用) 提供 CLI 脚手架
+  (`pm_init!`, `init_env_logger`, `cli_arg`, `build_gen`).
+- feature: `cli`(默认, 含 `task` `f`, 并启用 `pm-bin`), `task`, `f`. 二进制
+  `pm-tc` 声明 `required-features = ["cli"]`, 未启用 `cli` 时不编译.
 - 源码中遗留 `TODO` 表示尚未完成, 属正常.
 
 ## 代码 (文档) 格式化

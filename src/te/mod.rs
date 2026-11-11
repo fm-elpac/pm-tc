@@ -29,7 +29,7 @@ mod error;
 mod eval_impl;
 
 pub use error::TeError;
-pub use eval_impl::{eval, eval_use, exec_eval, exec_eval_use};
+pub use eval_impl::{eval, eval_use, exec_eval, exec_eval_2, exec_eval_use, exec_eval_use_2};
 
 // 变量 标签 (内部 分类)
 

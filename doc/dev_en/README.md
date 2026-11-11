@@ -46,9 +46,11 @@ pm-tc (PM Template Config Tool) parses/checks the config file (default
 - Error handling: each module defines its own error enum (`ConfError`,
   `TeError`, `TaskError`, `FError`); the top-level `PmtcError` aggregates them
   via `From`. Error display is best-effort, intended for development/debugging.
-- `pm-bin` provides the CLI scaffolding (`pm_init!`, `init_env_logger`,
-  `cli_arg`, `build_gen`).
-- Features: `cli` (default, includes `task` `f`), `task`, `f`.
+- `pm-bin` (optional, enabled only when the `cli` feature is on) provides the
+  CLI scaffolding (`pm_init!`, `init_env_logger`, `cli_arg`, `build_gen`).
+- Features: `cli` (default, includes `task` `f` and enables `pm-bin`), `task`,
+  `f`. The `pm-tc` binary declares `required-features = ["cli"]`, so it is not
+  compiled when `cli` is disabled.
 - Leftover `TODO` markers in the source indicate unfinished work and are normal.
 
 ## Code (Doc) Formatting
